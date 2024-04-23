@@ -1,125 +1,99 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
+#include "main.h"
 #include <mpi.h>
-#include <stdbool.h>
 #include "clockcycle.h"
 
-#define num_trees 256
-#define connections 5
-#define spread_chance 0.3
-#define extinguish_chance 0.1
-#define clock_frequency 512000000
-#define startBurningChance 0.05
+extern void addToList(struct Node* n, struct List *li, int val, int rank);
+extern void deleteNode(struct List *li, struct Node* n, int rank);
+extern const char* getSeasonName(int val);
 
-#define SPRING 0
-#define SUMMER 1
-#define AUTUMN 2
-#define WINTER 3
-
-#define RAINY 0
-#define SUNNY 1
-#define SNOWY 2
-#define CLOUDY 3
-
-#define springBurningMod .7
-#define summerBurningMod 1.2
-#define autumnBurningMod .5
-#define winterBurningMod .3
-
-#define rainyMod .2
-#define sunnyMod .8
-#define snowyMod .2
-#define cloudyMod .5
-
-#define RAINY_SPREAD_MOD 0.5
-#define SUNNY_SPREAD_MOD 1.2
-#define SNOWY_SPREAD_MOD 0.3
-#define CLOUDY_SPREAD_MOD 0.9
-
-#define RAINY_EXTINGUISH_MOD 1.5
-#define SUNNY_EXTINGUISH_MOD 0.8
-#define SNOWY_EXTINGUISH_MOD 1.2
-#define CLOUDY_EXTINGUISH_MOD 1.0
-
-
-struct Cell {
-    int id;
-    int status; // 1 = tree, 0 = empty, 2 = burning
-    int neighbors[connections];
-};
-
-struct List {
-    struct Node* head;
-    struct Node* end;
-    int size;
-};
-
-struct Node {
-    int id;
-    struct Node* next;
-    struct Node* prev;
-};
-
-// adds node with id = val to end of list
-struct Node* addToList(struct List *li, int val) {
-    struct Node* n = malloc(sizeof(struct Node));
-    n->id = val;
-    n->next = NULL;
-    if (li->size == 0) {
-        n->prev = NULL;
-        li->head = n;
-    } else {
-        n->prev = li->end;
-        li->end->next = n;
-    }
-
-    li->end = n;
-    li->size += 1;
-    return n;
-}
-// removes node from list and frees memory
-void deleteNode(struct List *li, struct Node* n) {
-    if (n->next != NULL && n->prev != NULL) { // middle case (node is in middle of list)
-        n->next->prev = n->prev;
-        n->prev->next = n->next;
-    } else { // end case (node is head or end of list)
-        if (n->next != NULL) { // node is head of list
-            n->next->prev = NULL;
-            li->head = n->next;
-        } else if (n->prev != NULL) { // node is end of list
-            n->prev->next = NULL;
-            li->end = n->prev;
-        } else { // node is head and end of list (prev and next == NULL)
-            li->head = NULL;
-            li->end = NULL;
-        }
-    }
-    n->next = NULL;
-    n->prev = NULL;
-    free(n);
-    li->size -= 1;
+void initializeList(List *li) {
+    li->head = NULL;
+    li->end = NULL;
+    li->size = 0;
 }
 
-const char* getSeasonName(int val) {
-    switch (val) {
-        case 0: return "Spring";
-        case 1: return "Summer";
-        case 2: return "Autumn";
-        case 3: return "Winter";
-        default: return "Unknown"; // Fallback case
+double calculateInfectionChance(int season, int dayType, double baseChance) {
+    switch(season) {
+        case SPRING: baseChance *= springBurningMod; break;
+        case SUMMER: baseChance *= summerBurningMod; break;
+        case AUTUMN: baseChance *= autumnBurningMod; break;
+        case WINTER: baseChance *= winterBurningMod; break;
+    }
+
+    switch(dayType) {
+        case RAINY: baseChance *= rainyMod; break;
+        case SUNNY: baseChance *= sunnyMod; break;
+        case SNOWY: baseChance *= snowyMod; break;
+        case CLOUDY: baseChance *= cloudyMod; break;
+    }
+
+    return baseChance;
+}
+
+void initializeNeighbors(int *neighbors, int numTrees) {
+    for (int c = 0; c < connections; c++) {
+        neighbors[c] = rand() % numTrees;
     }
 }
 
-void sim(int myrank, int numranks) {
-    // initialize rank vars
-    struct Cell *land = calloc(num_trees, sizeof(struct Cell));
-    struct List infectedList = {NULL, NULL, 0}; // linked list for easy add/remove
-    struct List infectedQueue = {NULL, NULL, 0};
+void writeFinalSummary(MPI_File file, int day, int *dayTotals) {
+    char buffer[150];  // Buffer for I/O operations
+    // Clear the buffer to avoid any garbage values
+    memset(buffer, 0, sizeof(buffer));
+
+    // Prepare the summary message
+    sprintf(buffer, "Day %i Totals: %i places not on fire, %i places on fire, %i burnt locations\nEnd of Sim\n", 
+            day, dayTotals[0], dayTotals[1], dayTotals[2]);
+    int count = strlen(buffer); // Get the size of the buffer to be written
+
+    // Determine the size of the file to calculate the offset for appending
+    MPI_Offset offset;
+    MPI_File_get_size(file, &offset);  // Get the current file size
+
+    // Write the summary to the file at the calculated offset
+    MPI_File_write_at(file, offset, buffer, count, MPI_CHAR, MPI_STATUS_IGNORE);
+}
+
+void writeDaySummary(MPI_File file, int day, int *dayTotals, const char *weatherDescription) {
+    char buffer[150];
+    // Prepare the message
+    sprintf(buffer, "Day %i Totals: %i places not on fire, %i places on fire, %i burnt locations, %s type of day\n",
+            day, dayTotals[0], dayTotals[1], dayTotals[2], weatherDescription);
+    int count = strlen(buffer); // Get the size of the buffer to be written
+
+    // Determine the size of the file to calculate the offset for appending
+    MPI_Offset offset;
+    MPI_File_get_size(file, &offset); // Get the current file size
+
+    // Write the summary to the file at the calculated offset
+    MPI_File_write_at(file, offset, buffer, count, MPI_CHAR, MPI_STATUS_IGNORE);
+}
+
+int main(int argc, char *argv[]) {
+
+    // mpi init
+    MPI_Init(&argc, &argv);
+    int myrank, numranks;
     int burntCount = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+    MPI_Comm_size(MPI_COMM_WORLD, &numranks);            
+    double start_cycles= clock_now();
+    
+    // initialize rank vars
+    Cell *land = calloc(num_trees, sizeof(struct Cell));
+    if (land == NULL) {
+        fprintf(stderr, "Failed to allocate memory for land.\n");
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+    List infectedList, infectedQueue;
+    initializeList(&infectedList);
+    initializeList(&infectedQueue);
+
     MPI_File file;
-    MPI_File_open(MPI_COMM_WORLD, "output.txt", MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &file);
-    // initialize structs
+    if (MPI_File_open(MPI_COMM_WORLD, "output.txt", MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &file) != MPI_SUCCESS) {
+        fprintf(stderr, "[%d] Failed to open file for output.\n", myrank);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }    
     srand(myrank);
     int id = myrank; // the id of the Cell we're creating
 
@@ -133,9 +107,10 @@ void sim(int myrank, int numranks) {
     while (id < num_trees) {
         // generate list of connections
         int neighbors[connections];
-        for (int c = 0; c < connections; c++) {
-            neighbors[c] = rand() % num_trees; // rand() % x = random number from 0 to x-1 ( e.g. [0-X) )
-        }
+        initializeNeighbors(currentCell->neighbors, num_trees);
+        // for (int c = 0; c < connections; c++) {
+        //     neighbors[c] = rand() % num_trees; // rand() % x = random number from 0 to x-1 ( e.g. [0-X) )
+        // }
         // determine if node starts infected
         double chance = (double)rand()/RAND_MAX;
 
@@ -143,42 +118,14 @@ void sim(int myrank, int numranks) {
 
         int isInfected = 0;
 
-        double modifiedChance = startBurningChance;
-
-        switch(season) {
-            case SPRING:
-                modifiedChance *= springBurningMod;
-                break;
-            case SUMMER:
-                modifiedChance *= summerBurningMod;
-                break;
-            case AUTUMN:
-                modifiedChance *= autumnBurningMod;
-                break;
-            case WINTER:
-                modifiedChance *= winterBurningMod;
-                break;
-        }
-
-        switch(dayType) {
-            case RAINY:
-                modifiedChance *= rainyMod;
-                break;
-            case SUNNY:
-                modifiedChance *= sunnyMod;
-                break;
-            case SNOWY:
-                modifiedChance *= snowyMod;
-                break;
-            case CLOUDY:
-                modifiedChance *= cloudyMod;
-                break;
-        }
+        double modifiedChance = calculateInfectionChance(season, dayType, startBurningChance);
+        // double modifiedChance = startBurningChance;
 
         //CHANGE!!!!
         // make this change the chance of starting burning based on the weather outside
         if (chance < modifiedChance) {
-            addToList(&infectedList, id);
+            struct Node* t = malloc(sizeof(struct Node));
+            addToList(t, &infectedList, id, myrank);
             isInfected = 1;
             //printf("Rank %i: Node %i has been infected at start\n", myrank, id); // Debug print
         }
@@ -191,51 +138,50 @@ void sim(int myrank, int numranks) {
     }
     
     // day cycle
-    int b = 0;
-    while (true) {
+    bool simContinue=true;
+    int day = 0;
+    while (simContinue) {
         // Beginning of day information
-        b += 1;
-        int dayData[3] = {(num_trees/numranks)-infectedList.size-burntCount, infectedList.size, burntCount};
+        day += 1;
+        int healthyCount = (num_trees / numranks) - infectedList.size - burntCount;
+        int dayData[3] = {healthyCount, infectedList.size, burntCount};
         int dayTotals[3];
         MPI_Allreduce(&dayData, &dayTotals, 3, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD);
         // Day summaries
-
-
 
         if (dayTotals[0] == 0 || dayTotals[1] == 0) { // sim ends when either no infected or non-infected cell remain
 
             // Print final individual rank day summary
             char buffer[150]; //buffer needed for io
             memset(buffer, '\0', sizeof(buffer)); 
-            // sprintf(buffer, "End of Sim Day %i Rank %i: %i places not on fire, %i places on fire, %i burnt locations\n", b, myrank, dayData[0], dayData[1], dayData[2]);
+            // sprintf(buffer, "End of Sim Day %i Rank %i: %i places not on fire, %i places on fire, %i burnt locations\n", day, myrank, dayData[0], dayData[1], dayData[2]);
             int count = strlen(buffer); // exclude null terminator
             // Determine the size of the file
             MPI_Offset file_size;
             MPI_File_get_size(file, &file_size);
 
             // Set the offset to the end of the file
-            MPI_Offset offset = file_size + (count * myrank);
+            offset += count * myrank; // Calculate offset for each rank to avoid overlap
             MPI_File_write_at_all(file, offset, buffer, count, MPI_CHAR, MPI_STATUS_IGNORE);
             MPI_File_sync(file);
 
             // Print final total day summary
             if (myrank == 0) {
-                char buffer0[150]; //buffer needed for io
-                memset(buffer0, '\0', sizeof(buffer)); 
-                sprintf(buffer0, "End of Sim Day %i Totals: %i places not on fire, %i places on fire, %i burnt locations\n", b, dayTotals[0], dayTotals[1], dayTotals[2]);
-                int count = strlen(buffer0); // exclude null terminator
-                // Determine the size of the file
-                MPI_Offset file_size;
-                MPI_File_get_size(file, &file_size);
-                // Set the offset to the end of the file
-                MPI_Offset offset = file_size;
-                MPI_File_write_at(file, offset, buffer0, count, MPI_CHAR, MPI_STATUS_IGNORE);
+                // char buffer0[150]; //buffer needed for io
+                // memset(buffer0, '\0', sizeof(buffer)); 
+                // sprintf(buffer0, "Day %i Totals: %i places not on fire, %i places on fire, %i burnt locations\nEnd of Sim\n", day, dayTotals[0], dayTotals[1], dayTotals[2]);
+                // count = strlen(buffer0); // exclude null terminator
+                // // Determine the size of the file
+                // MPI_Offset file_size;
+                // MPI_File_get_size(file, &file_size);
+                // // Set the offset to the end of the file
+                // MPI_Offset offset = file_size;
+                // MPI_File_write_at(file, offset, buffer0, count, MPI_CHAR, MPI_STATUS_IGNORE);
+                writeFinalSummary(file, day, dayTotals);
             }
             break;
         } 
         else {
-
-
             int weather = rand() % 4;  // Determine today's weather randomly
             char weatherDescription[20];  // Buffer to store description of the weather
             switch (weather) {
@@ -255,33 +201,39 @@ void sim(int myrank, int numranks) {
             // Print individual rank day summary
             char buffer[150]; //buffer needed for io
             memset(buffer, '\0', sizeof(buffer)); 
-            // sprintf(buffer, "Day %i Rank %i: %i places not on fire, %i places on fire, %i burnt locations\n", b, myrank, dayData[0], dayData[1], dayData[2]);
+            // sprintf(buffer, "Day %i Rank %i: %i places not on fire, %i places on fire, %i burnt locations\n", day, myrank, dayData[0], dayData[1], dayData[2]);
             int count = strlen(buffer); // exclude null terminator
             // Determine the size of the file
-            MPI_Offset file_size;
-            MPI_File_get_size(file, &file_size);
+            // MPI_Offset file_size;
+            // MPI_File_get_size(file, &file_size);
 
-            // Set the offset to the end of the file
-            MPI_Offset offset = file_size + (count * myrank);
+            // // Set the offset to the end of the file
+            // MPI_Offset offset = file_size + (count * myrank);
+            // MPI_File_write_at_all(file, offset, buffer, count, MPI_CHAR, MPI_STATUS_IGNORE);
+            // MPI_File_sync(file);
+            MPI_Offset offset;
+            MPI_File_get_size(file, &offset);  // Get current file size for appending
+            offset += count * myrank; // Calculate offset to prevent overlap among ranks
             MPI_File_write_at_all(file, offset, buffer, count, MPI_CHAR, MPI_STATUS_IGNORE);
-            MPI_File_sync(file);
+            MPI_File_sync(file); 
 
             // Print total day summary
             if (myrank == 0) {
-                char buffer0[150]; //buffer needed for io
-                memset(buffer0, '\0', sizeof(buffer)); 
-                sprintf(buffer0, "Day %i Totals: %i places not on fire, %i places on fire, %i burnt locations, %s type of day\n", b, dayTotals[0], dayTotals[1], dayTotals[2],weatherDescription);
-                int count = strlen(buffer0); // exclude null terminator
-                // Determine the size of the file
-                MPI_Offset file_size;
-                MPI_File_get_size(file, &file_size);
+                writeDaySummary(file, day, dayTotals, weatherDescription);
+                // char buffer0[150]; //buffer needed for io
+                // memset(buffer0, '\0', sizeof(buffer)); 
+                // sprintf(buffer0, "Day %i Totals: %i places not on fire, %i places on fire, %i burnt locations, %s type of day\n", day, dayTotals[0], dayTotals[1], dayTotals[2],weatherDescription);
+                // int count = strlen(buffer0); // exclude null terminator
+                // // Determine the size of the file
+                // MPI_Offset file_size;
+                // MPI_File_get_size(file, &file_size);
 
-                // Set the offset to the end of the file
-                MPI_Offset offset = file_size;
-                MPI_File_write_at(file, offset, buffer0, count, MPI_CHAR, MPI_STATUS_IGNORE);
+                // // Set the offset to the end of the file
+                // MPI_Offset offset = file_size;
+                // MPI_File_write_at(file, offset, buffer0, count, MPI_CHAR, MPI_STATUS_IGNORE);
             }
         }
-
+//START FROM HERE
         // loop through infected nodes, find new infections and deaths
         struct Node* n = infectedList.head;
         int messageCount[numranks]; // index = rank, count[index] = number of messages to that rank
@@ -324,8 +276,10 @@ void sim(int myrank, int numranks) {
                     // if infected id is owned by this rank, add to self queue
                     if (infectedID % numranks == myrank) {
                         if (land[infectedID].status == 0) {
-                            addToList(&infectedQueue, infectedID);
+                            struct Node* t = malloc(sizeof(struct Node));
+                            addToList(t, &infectedQueue, infectedID, myrank);
                             land[infectedID].status = 1;
+                            
                         }
                     } 
                     else { // else, increment corresponding message count and send message
@@ -343,7 +297,7 @@ void sim(int myrank, int numranks) {
             if (chance < daily_extinguish_chance) {
                 land[id].status = 2;          
                 struct Node* temp = n->next;
-                deleteNode(&infectedList, n);
+                deleteNode(&infectedList, n, myrank);
                 burntCount += 1;
                 n = temp;
                 dead = true;
@@ -366,7 +320,9 @@ void sim(int myrank, int numranks) {
             MPI_Recv(&recv, 1, MPI_LONG_LONG_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             if (land[recv].status == 0) { // if node is already in self infectedQueue then status = 1, so there will be no repeats
                 land[recv].status = 1;
-                addToList(&infectedQueue, recv);
+                struct Node* t = malloc(sizeof(struct Node));
+                addToList(t, &infectedQueue, recv, myrank);
+                
             }
         }
         // Loop through queue and add nodes to infectedList
@@ -374,24 +330,15 @@ void sim(int myrank, int numranks) {
         while(n != NULL) {
             int id = n->id;
             //printf("Rank %i: Node %i has been infected\n", myrank, id); // Debug printing
-            addToList(&infectedList, id);
-            deleteNode(&infectedQueue, n);
+            struct Node* t = malloc(sizeof(struct Node));
+            addToList(t, &infectedList, id, myrank);
+            
+            deleteNode(&infectedQueue, n, myrank);
             n = infectedQueue.head;
         }
     }
     MPI_File_close(&file);
-}
-
-int main(int argc, char *argv[]) {
-
-    // mpi init
-    MPI_Init(&argc, &argv);
-    int myrank;
-    int numranks;
-    MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
-    MPI_Comm_size(MPI_COMM_WORLD, &numranks);            
-    double start_cycles= clock_now();
-    sim(myrank, numranks);
+    
     double end_cycles= clock_now();
     double time_in_secs = ((double)(end_cycles - start_cycles)) / clock_frequency;
     if (myrank == 0) {

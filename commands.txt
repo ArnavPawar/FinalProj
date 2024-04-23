@@ -1,0 +1,8 @@
+ssh PCPCtttl@blp03.ccni.rpi.edu
+ssh PCPCtttl@dcsfen01
+module load xl_r spectrum-mpi cuda
+mpicc main.c -o a.out
+salloc -N 1 --partition=el8 --gres=gpu:6 -t 30
+mpirun -N 32 /gpfs/u/home/PCPC/PCPCtttl/scratch/a.out
+
+scp main.c clockcycle.h PCPCtttl@blp03.ccni.rpi.edu:scratch

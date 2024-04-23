@@ -107,7 +107,7 @@ int main(int argc, char *argv[]) {
     while (id < num_trees) {
         // generate list of connections
         int neighbors[connections];
-        initializeNeighbors(currentCell->neighbors, num_trees);
+        initializeNeighbors(neighbors, num_trees);
         // for (int c = 0; c < connections; c++) {
         //     neighbors[c] = rand() % num_trees; // rand() % x = random number from 0 to x-1 ( e.g. [0-X) )
         // }
@@ -161,8 +161,8 @@ int main(int argc, char *argv[]) {
             MPI_File_get_size(file, &file_size);
 
             // Set the offset to the end of the file
-            offset += count * myrank; // Calculate offset for each rank to avoid overlap
-            MPI_File_write_at_all(file, offset, buffer, count, MPI_CHAR, MPI_STATUS_IGNORE);
+            file_size += count * myrank; // Calculate offset for each rank to avoid overlap
+            MPI_File_write_at_all(file, file_size, buffer, count, MPI_CHAR, MPI_STATUS_IGNORE);
             MPI_File_sync(file);
 
             // Print final total day summary
